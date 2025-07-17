@@ -21,11 +21,11 @@ Both demonstrate high-performance rendering of large tilemaps with optimisations
 Both `main.c` and `maingl.c` implement:
 
 - **View Clipping**: Only visible tiles are rendered
-- **LOD Skipping**: When tiles appear too small, rendering is skipped for many of them
 - **Group Rendering**: Tiles at low zoom are grouped and expanded to avoid overdraw
 
 The `maingl.c` version adds further optimisations:
 
+- **LOD Skipping**: When tiles appear too small, rendering is skipped for many of them
 - **Bitwise shift and mask** optimisations when tile sizes and tile counts are powers of two (detected at runtime)
 - **Full control of rasterisation** to eliminate texture bleeding and black lines at tile edges (a limitation in `main.c`)
 - **OpenMP parallelised pre-draw config** to reduce CPU bottle-necking seen on slower hardware
