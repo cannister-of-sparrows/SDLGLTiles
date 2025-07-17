@@ -48,15 +48,15 @@ typedef struct {
     int rows;
     int cols;
     GLuint texture_id;
-
-    // Bit shift optimization fields
-    int use_shift;      // Whether cols is power of 2
-    int shift_bits;     // log2(cols), used for fast division
 } Tileset;
+
+typedef struct {
+    int sx, sy;      // Precomputed texture coordinates (tile index in tileset grid)
+} TileEntry;
 
 // --- Map storage using a flat array for performance ---
 typedef struct {
-    int* tiles;
+    TileEntry* tiles;
 } TileMap;
 
 // --- Helper: check if integer is power of two ---
@@ -87,28 +87,27 @@ int load_tileset(Tileset* tileset) {
     tileset->cols = surface->w / tileset->tile_width;
     tileset->rows = surface->h / tileset->tile_height;
 
-    // Detect and record if we can use bit shift optimization
-    tileset->use_shift = is_power_of_two(tileset->cols);
-    if (tileset->use_shift) {
-        tileset->shift_bits = (int)log2f((float)tileset->cols);
-    }
-
     SDL_FreeSurface(surface);
     return 1;
 }
 
 // --- Fill tilemap with random tile indices ---
-void fill_random_tilemap(TileMap* map, int max_tile_index) {
+void fill_random_tilemap(TileMap* map, int max_tile_index, const Tileset* tileset) {
     for (int y = 0; y < MAP_HEIGHT; y++) {
         for (int x = 0; x < MAP_WIDTH; x++) {
-            map->tiles[y * MAP_WIDTH + x] = rand() % max_tile_index;
+            int i = y * MAP_WIDTH + x;
+            int tile_index = rand() % max_tile_index;
+
+            TileEntry* tile = &map->tiles[i];
+            tile->sx = tile_index % tileset->cols;
+            tile->sy = tile_index / tileset->cols;
         }
     }
 }
 
 // --- Optimized draw_tile with shift logic and precomputed UV steps ---
 void draw_tile(
-    int tx, int ty, int tile_index,
+    int tx, int ty, int sx, int sy,
     Tileset* tileset,
     float zoom, float offset_x, float offset_y,
     int lod,
@@ -116,15 +115,6 @@ void draw_tile(
 
     int tw = tileset->tile_width;
     int th = tileset->tile_height;
-
-    int sx, sy;
-    if (tileset->use_shift) {
-        sx = tile_index & (tileset->cols - 1);      // tile_index % cols (fast)
-        sy = tile_index >> tileset->shift_bits;     // tile_index / cols (fast)
-    } else {
-        sx = tile_index % tileset->cols;
-        sy = tile_index / tileset->cols;
-    }
 
     // Use precomputed texture step size
     float u  = sx * step_u;
@@ -199,25 +189,17 @@ int main(int argc, char* argv[]) {
     if (!load_tileset(&tileset)) return 1;
 
     TileMap map;
-    map.tiles = malloc(sizeof(int) * MAP_WIDTH * MAP_HEIGHT);
+    map.tiles = malloc(sizeof(TileEntry) * MAP_WIDTH * MAP_HEIGHT);
     if (!map.tiles) {
         fprintf(stderr, "Failed to allocate memory for tilemap\n");
         return 1;
-    }
-
-    // Determine if tileset.cols is a power of two for bit-shift optimization
-    tileset.use_shift = (tileset.cols & (tileset.cols - 1)) == 0;
-    if (tileset.use_shift) {
-        int shift = 0;
-        while ((1 << shift) < tileset.cols) shift++;
-        tileset.shift_bits = shift;
     }
 
     float step_u = 1.0f / tileset.cols;
     float step_v = 1.0f / tileset.rows;
 
     srand((unsigned int)time(NULL));
-    fill_random_tilemap(&map, tileset.cols * tileset.rows);
+    fill_random_tilemap(&map, tileset.cols * tileset.rows, &tileset);
 
     float offset_x = (MAP_WIDTH * TILE_WIDTH - SCREEN_WIDTH) / -2.0f;
     float offset_y = (MAP_HEIGHT * TILE_HEIGHT - SCREEN_HEIGHT) / -2.0f;
@@ -300,10 +282,10 @@ int main(int argc, char* argv[]) {
         // --- DRAW TILES ---
         for (int y = start_y; y < max_y; y += lod) {
             for (int x = start_x; x < max_x; x += lod) {
-                int tile_index = map.tiles[y * MAP_WIDTH + x];
-
+                
                 // Call draw_tile with precomputed texture steps and shift-optimized indexing
-                draw_tile(x, y, tile_index, &tileset, zoom, offset_x, offset_y, lod, step_u, step_v);
+                TileEntry tile = map.tiles[y * MAP_WIDTH + x];
+                draw_tile(x, y, tile.sx, tile.sy, &tileset, zoom, offset_x, offset_y, lod, step_u, step_v);
             }
         }
 
@@ -343,4 +325,3 @@ int main(int argc, char* argv[]) {
     SDL_Quit();
     return 0;
 }
-
