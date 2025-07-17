@@ -28,6 +28,7 @@ The `maingl.c` version adds further optimisations:
 
 - **Bitwise shift and mask** optimisations when tile sizes and tile counts are powers of two (detected at runtime)
 - **Full control of rasterisation** to eliminate texture bleeding and black lines at tile edges (a limitation in `main.c`)
+- **OpenMP parallelised pre-draw config** to reduce CPU bottle-necking seen on slower hardware
 
 ## Limitations
 
