@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <omp.h>
 
 // --- Configuration constants ---
 #define SCREEN_WIDTH 800                  // Initial window width
@@ -39,6 +40,7 @@
 #define MIN_ZOOM 0.001f                   // Minimum zoom level
 #define ZOOM_STEP 1.1f                    // Zoom in/out factor
 #define OUTLINE_PIXEL_WIDTH 8.0f          // Width of the outline in pixels
+#define LAYER_COUNT 1                     // Simulate multiple tile layers
 
 // --- Tile asset metadata and OpenGL texture handle ---
 typedef struct {
@@ -58,6 +60,16 @@ typedef struct {
 typedef struct {
     TileEntry* tiles;
 } TileMap;
+
+typedef struct {
+    int x, y;
+    int sx, sy;
+} TileDrawCmd;
+
+typedef struct {
+    TileDrawCmd* data;
+    int capacity;
+} DrawBuffer;
 
 // --- Helper: check if integer is power of two ---
 int is_power_of_two(int x) {
@@ -168,6 +180,50 @@ void draw_tile_outline(int tile_x, int tile_y, float zoom, float offset_x, float
     glColor3f(1.0f, 1.0f, 1.0f);
 }
 
+void ensure_draw_buffer(DrawBuffer* buf, int needed) {
+    if (needed > buf->capacity) {
+        buf->data = realloc(buf->data, sizeof(TileDrawCmd) * needed);
+        buf->capacity = needed;
+    }
+}
+
+void handle_events(int* running, int* dragging, int* last_mouse_x, int* last_mouse_y,
+                   float* offset_x, float* offset_y, float* zoom, SDL_Window* window) {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        if (e.type == SDL_QUIT) *running = 0;
+        else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+            *dragging = 1;
+            *last_mouse_x = e.button.x;
+            *last_mouse_y = e.button.y;
+        } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+            *dragging = 0;
+        } else if (e.type == SDL_MOUSEMOTION && *dragging) {
+            *offset_x += (e.motion.x - *last_mouse_x) / *zoom;
+            *offset_y += (e.motion.y - *last_mouse_y) / *zoom;
+            *last_mouse_x = e.motion.x;
+            *last_mouse_y = e.motion.y;
+        } else if (e.type == SDL_MOUSEWHEEL) {
+            int mx, my;
+            SDL_GetMouseState(&mx, &my);
+            float world_x = mx / *zoom - *offset_x;
+            float world_y = my / *zoom - *offset_y;
+            *zoom *= (e.wheel.y > 0) ? ZOOM_STEP : (1.0f / ZOOM_STEP);
+            if (*zoom < MIN_ZOOM) *zoom = MIN_ZOOM;
+            if (*zoom > MAX_ZOOM) *zoom = MAX_ZOOM;
+            *offset_x = mx / *zoom - world_x;
+            *offset_y = my / *zoom - world_y;
+        } else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_RESIZED) {
+            int width = e.window.data1;
+            int height = e.window.data2;
+            glViewport(0, 0, width, height);
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glOrtho(0, width, height, 0, -1, 1);
+            glMatrixMode(GL_MODELVIEW);
+        }
+    }
+}
 
 int main(int argc, char* argv[]) {
     SDL_Init(SDL_INIT_VIDEO);
@@ -211,42 +267,12 @@ int main(int argc, char* argv[]) {
     Uint32 fps_last_time = SDL_GetTicks();
     int fps_frames = 0;
 
+    DrawBuffer draw_buf = {0};
+
     int running = 1;
     SDL_Event e;
     while (running) {
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) running = 0;
-            else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                dragging = 1;
-                last_mouse_x = e.button.x;
-                last_mouse_y = e.button.y;
-            } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
-                dragging = 0;
-            } else if (e.type == SDL_MOUSEMOTION && dragging) {
-                offset_x += (e.motion.x - last_mouse_x) / zoom;
-                offset_y += (e.motion.y - last_mouse_y) / zoom;
-                last_mouse_x = e.motion.x;
-                last_mouse_y = e.motion.y;
-            } else if (e.type == SDL_MOUSEWHEEL) {
-                int mx, my;
-                SDL_GetMouseState(&mx, &my);
-                float world_x = mx / zoom - offset_x;
-                float world_y = my / zoom - offset_y;
-                zoom *= (e.wheel.y > 0) ? ZOOM_STEP : (1.0f / ZOOM_STEP);
-                if (zoom < MIN_ZOOM) zoom = MIN_ZOOM;
-                if (zoom > MAX_ZOOM) zoom = MAX_ZOOM;
-                offset_x = mx / zoom - world_x;
-                offset_y = my / zoom - world_y;
-            } else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_RESIZED) {
-                int width = e.window.data1;
-                int height = e.window.data2;
-                glViewport(0, 0, width, height);
-                glMatrixMode(GL_PROJECTION);
-                glLoadIdentity();
-                glOrtho(0, width, height, 0, -1, 1);
-                glMatrixMode(GL_MODELVIEW);
-            }
-        }
+        handle_events(&running, &dragging, &last_mouse_x, &last_mouse_y, &offset_x, &offset_y, &zoom, window);
 
         int screen_w, screen_h;
         SDL_GetWindowSize(window, &screen_w, &screen_h); // Get current window size (important if user resized)
@@ -279,14 +305,37 @@ int main(int argc, char* argv[]) {
         int start_x = (min_x / lod) * lod;
         int start_y = (min_y / lod) * lod;
 
-        // --- DRAW TILES ---
+        // Open MP parallelisation
+        int tiles_x = ((max_x - start_x) + lod - 1) / lod;
+        int tiles_y = ((max_y - start_y) + lod - 1) / lod;
+        int estimated_tiles = tiles_x * tiles_y * LAYER_COUNT;
+
+        // With some safety margin
+        ensure_draw_buffer(&draw_buf, (int)(estimated_tiles * 1.2f));
+
+        int draw_count = 0;
+
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int y = start_y; y < max_y; y += lod) {
             for (int x = start_x; x < max_x; x += lod) {
-                
-                // Call draw_tile with precomputed texture steps and shift-optimized indexing
-                TileEntry tile = map.tiles[y * MAP_WIDTH + x];
-                draw_tile(x, y, tile.sx, tile.sy, &tileset, zoom, offset_x, offset_y, lod, step_u, step_v);
+                int idx = y * MAP_WIDTH + x;
+                TileEntry tile = map.tiles[idx];
+
+                int local_index;
+                #pragma omp atomic capture
+                local_index = draw_count++;
+
+                draw_buf.data[local_index].x = x;
+                draw_buf.data[local_index].y = y;
+                draw_buf.data[local_index].sx = tile.sx;
+                draw_buf.data[local_index].sy = tile.sy;
             }
+        }
+
+        // --- DRAW TILES ---
+        for (int i = 0; i < draw_count; ++i) {
+            TileDrawCmd* cmd = &draw_buf.data[i];
+            draw_tile(cmd->x, cmd->y, cmd->sx, cmd->sy, &tileset, zoom, offset_x, offset_y, lod, step_u, step_v);
         }
 
         // --- MOUSE HOVER TILE OUTLINE ---
