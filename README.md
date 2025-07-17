@@ -7,8 +7,6 @@ This repository contains two implementations of a 2D tilemap renderer:
 
 Both demonstrate high-performance rendering of large tilemaps with optimisations for smooth panning, zooming, and mouse interaction.
 
----
-
 ## Features (Both Versions)
 
 - **View panning** with mouse drag
@@ -17,8 +15,6 @@ Both demonstrate high-performance rendering of large tilemaps with optimisations
 - **FPS counter** and zoom/LOD display in window title
 - **Hardware-accelerated rendering** (both SDL2 and OpenGL)
 - **Efficient memory layout** using a flat tile array
-
----
 
 ## Optimisations
 
@@ -33,15 +29,11 @@ The `maingl.c` version adds further optimisations:
 - **Bitwise shift and mask** optimisations when tile sizes and tile counts are powers of two (detected at runtime)
 - **Full control of rasterisation** to eliminate texture bleeding and black lines at tile edges (a limitation in `main.c`)
 
----
-
 ## Limitations
 
 - Requires a `tileset.png` file (not included)
 - Assumes all tiles in the tileset are laid out in a regular grid
 - Uses OpenGL 1.1 for compatibility; no shaders or modern features
-
----
 
 ## License
 
